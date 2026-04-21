@@ -1,3 +1,27 @@
+# .goci — GopherCI pipeline definition
+#
+# Place this file at the root of your repository.
+# Each [[steps]] entry is executed in order on the CI runner.
+#
+# Fields:
+#   [pipeline]
+#     name  — optional display name shown in the CLI
+#
+#   [[steps]]
+#     name  — human-readable step label (required)
+#     cmd   — command + args as an array (required)
+
+[pipeline]
+name = "gopher-ci-cli"
+
 [[steps]]
 name = "version"
-cmd = ["go", "version"]
+cmd  = ["go", "version"]
+
+[[steps]]
+name = "build"
+cmd  = ["go", "build", "cmd/commands.go", "cmd/components.go", "cmd/main.go", "cmd/model.go", "cmd/styles.go", "cmd/update.go", "cmd/view.go"]
+
+[[steps]]
+name = "vet"
+cmd  = ["go", "vet", "./..."]

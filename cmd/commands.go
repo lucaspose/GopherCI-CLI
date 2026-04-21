@@ -1,54 +1,89 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lucaspose/goci-cli/internal/api"
 	"github.com/lucaspose/goci-cli/internal/config"
 )
 
+const (
+	githubOAuthCallbackAddr = "127.0.0.1:9999"
+	githubOAuthTimeout      = 2 * time.Minute
+)
+
 // loadSteps reads the local .goci config and converts steps to API format.
-// Shared by rerunJob and rerunJobWithURL to avoid duplication.
-func loadSteps() ([]api.Step, error) {
+func loadSteps() ([]api.Step, string, error) {
 	cfg, err := config.LoadGociConfig()
 	if err != nil {
-		return nil, fmt.Errorf("no .goci file found")
+		return nil, "", fmt.Errorf("no .goci file found in current directory")
+	}
+	if len(cfg.Steps) == 0 {
+		return nil, cfg.Pipeline.Name, fmt.Errorf(".goci file has no steps defined")
 	}
 	steps := make([]api.Step, len(cfg.Steps))
 	for i, s := range cfg.Steps {
 		steps[i] = api.Step{Name: s.Name, Cmd: s.Cmd}
 	}
-	return steps, nil
+	return steps, cfg.Pipeline.Name, nil
 }
 
-// refreshJobs re-fetches the job list using whichever flow was used to load
-// jobs initially (GitHub clone URL or org/repo IDs). When neither context is
-// available it returns an empty list so the loading state is never stuck.
+// refreshJobs re-fetches the job list using whichever flow was used to load jobs initially.
 func refreshJobs(client *api.Client, m model) tea.Cmd {
-	if m.selectedGitHubRepo != nil {
-		return fetchAllJobs(client, m.selectedGitHubRepo.CloneURL)
+	if m.repos.selectedGH != nil {
+		return fetchAllJobs(client, githubCloneURLCandidates(m.repos.selectedGH)...)
 	}
-	if m.selectedOrg != nil && m.selectedRepo != nil {
-		return fetchJobs(client, m.selectedOrg.ID, m.selectedRepo.ID)
+	if m.repos.selectedOrg != nil && m.repos.selectedRepo != nil {
+		return fetchJobs(client, m.repos.selectedOrg.ID, m.repos.selectedRepo.ID)
 	}
-	// No context: clear loading state with an empty list instead of hanging.
 	return func() tea.Msg { return jobsLoadedMsg{jobs: nil} }
 }
 
-// dispatchDelete calls the right delete endpoint depending on whether we have
-// org/repo context (org-flow) or only a job ID (github-flow).
+// dispatchDelete calls the right delete endpoint based on repo context.
 func dispatchDelete(client *api.Client, m model) tea.Cmd {
-	if m.selectedOrg != nil && m.selectedRepo != nil {
-		return deleteJob(client, m.selectedOrg.ID, m.selectedRepo.ID, m.selectedJob.ID)
+	if m.repos.selectedOrg != nil && m.repos.selectedRepo != nil {
+		return deleteJob(client, m.repos.selectedOrg.ID, m.repos.selectedRepo.ID, m.selectedJob.ID)
 	}
 	return deleteJobByID(client, m.selectedJob.ID)
 }
 
-// --- Auth ---
+// dispatchCreate routes job creation to the right API endpoint.
+func dispatchCreate(client *api.Client, m model, steps []api.Step) tea.Msg {
+	if m.repos.selectedGH != nil {
+		cloneURL := preferredGitHubCloneURL(m.repos.selectedGH)
+		if cloneURL == "" {
+			return errMsg("no clone url found for selected GitHub repository")
+		}
+		if err := client.CreateJobWithURL(cloneURL, steps); err != nil {
+			return errMsg(err.Error())
+		}
+		return jobCreatedMsg{}
+	}
+	if m.repos.selectedOrg != nil && m.repos.selectedRepo != nil {
+		if err := client.CreateJob(m.repos.selectedOrg.ID, m.repos.selectedRepo.ID, steps); err != nil {
+			return errMsg(err.Error())
+		}
+		return jobCreatedMsg{}
+	}
+	return errMsg("no repository context for job creation")
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
 func doLogin(client *api.Client, email, password string) tea.Cmd {
 	return func() tea.Msg {
@@ -60,19 +95,77 @@ func doLogin(client *api.Client, email, password string) tea.Cmd {
 	}
 }
 
-func waitForGitHubToken() tea.Cmd {
+func waitForGitHubToken(baseURL string) tea.Cmd {
 	return func() tea.Msg {
+		ln, err := net.Listen("tcp", githubOAuthCallbackAddr)
+		if err != nil {
+			return errMsg(fmt.Sprintf("impossible de démarrer le callback GitHub sur %s: %v", githubOAuthCallbackAddr, err))
+		}
+
 		tokenChan := make(chan string, 1)
+		callbackErrChan := make(chan error, 1)
+		listenErrChan := make(chan error, 1)
+
 		mux := http.NewServeMux()
-		srv := &http.Server{Addr: ":9999", Handler: mux}
+		srv := &http.Server{Handler: mux}
 		mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-			token := r.URL.Query().Get("token")
-			fmt.Fprintf(w, "Token received! You can return to the CLI.")
-			tokenChan <- token
+			token := strings.TrimSpace(r.URL.Query().Get("token"))
+			if token == "" {
+				http.Error(w, "missing token", http.StatusBadRequest)
+				select {
+				case callbackErrChan <- fmt.Errorf("token manquant dans le callback"):
+				default:
+				}
+				return
+			}
+
+			_, _ = fmt.Fprintln(w, "Token received! You can return to the CLI.")
+			select {
+			case tokenChan <- token:
+			default:
+			}
 		})
-		go srv.ListenAndServe()
-		token := <-tokenChan
-		srv.Close()
+
+		go func() {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				listenErrChan <- err
+			}
+		}()
+
+		if err := openGitHubLogin(baseURL); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = srv.Shutdown(shutdownCtx)
+			cancel()
+			return errMsg(err.Error())
+		}
+
+		timer := time.NewTimer(githubOAuthTimeout)
+		defer timer.Stop()
+
+		var token string
+		select {
+		case token = <-tokenChan:
+		case err := <-callbackErrChan:
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = srv.Shutdown(shutdownCtx)
+			cancel()
+			return errMsg("callback GitHub invalide: " + err.Error())
+		case err := <-listenErrChan:
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = srv.Shutdown(shutdownCtx)
+			cancel()
+			return errMsg("serveur callback GitHub indisponible: " + err.Error())
+		case <-timer.C:
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = srv.Shutdown(shutdownCtx)
+			cancel()
+			return errMsg("connexion GitHub expirée: aucun token reçu")
+		}
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = srv.Shutdown(shutdownCtx)
+		cancel()
+
 		return githubTokenMsg{token: token}
 	}
 }
@@ -87,30 +180,261 @@ func exchangeGitHubToken(client *api.Client, githubToken string) tea.Cmd {
 	}
 }
 
-func openGitHubLogin() {
-	exec.Command("xdg-open", "http://localhost:8080/auth/github").Start()
+func githubAuthURL(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		trimmed = "http://localhost:8080"
+	}
+	return strings.TrimRight(trimmed, "/") + "/auth/github"
 }
 
-// startAuthTicker returns a one-shot command that fires tickMsg after 30s.
-// The tickMsg handler in Update() re-arms it each time to keep the cycle going.
+func openGitHubLogin(baseURL string) error {
+	authURL := githubAuthURL(baseURL)
+
+	var openers [][]string
+	switch runtime.GOOS {
+	case "darwin":
+		openers = [][]string{{"open", authURL}}
+	case "windows":
+		openers = [][]string{{"rundll32", "url.dll,FileProtocolHandler", authURL}}
+	default:
+		openers = [][]string{
+			{"xdg-open", authURL},
+			{"gio", "open", authURL},
+			{"sensible-browser", authURL},
+		}
+	}
+
+	for _, opener := range openers {
+		if len(opener) == 0 {
+			continue
+		}
+		cmd := exec.Command(opener[0], opener[1:]...)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("impossible d'ouvrir le navigateur automatiquement. Ouvrez cette URL: %s", authURL)
+}
+
 func startAuthTicker() tea.Cmd {
 	return tea.Every(30*time.Second, func(_ time.Time) tea.Msg {
 		return tickMsg{}
 	})
 }
 
-// checkAuthCmd pings the API with the current token. On 401 it returns errMsg
-// which triggers the existing redirect-to-login logic in Update().
+func startJobsStreamRetryTicker(delay time.Duration) tea.Cmd {
+	if delay <= 0 {
+		delay = time.Second
+	}
+	return tea.Tick(delay, func(_ time.Time) tea.Msg {
+		return jobsStreamRetryTickMsg{}
+	})
+}
+
+type jobsStreamFilter struct {
+	orgID     string
+	repoID    string
+	cloneURLs []string
+}
+
+func openJobsStream(client *api.Client, m model) tea.Cmd {
+	return func() tea.Msg {
+		filter, ok := jobsStreamFilterFromModel(m)
+		if !ok {
+			return jobsStreamFailedMsg{err: "no repository context for jobs stream"}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		messages := make(chan tea.Msg, 8)
+		go runJobsSSEStream(ctx, client, filter, messages)
+
+		return jobsStreamOpenedMsg{messages: messages, stop: cancel}
+	}
+}
+
+func waitNextJobsStreamMessage(messages <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-messages
+		if !ok {
+			return jobsStreamClosedMsg{}
+		}
+		return msg
+	}
+}
+
+func jobsStreamFilterFromModel(m model) (jobsStreamFilter, bool) {
+	if m.repos.selectedGH != nil {
+		return jobsStreamFilter{cloneURLs: githubCloneURLCandidates(m.repos.selectedGH)}, true
+	}
+	if m.repos.selectedOrg != nil && m.repos.selectedRepo != nil {
+		return jobsStreamFilter{orgID: m.repos.selectedOrg.ID, repoID: m.repos.selectedRepo.ID}, true
+	}
+	return jobsStreamFilter{}, false
+}
+
+func runJobsSSEStream(ctx context.Context, client *api.Client, filter jobsStreamFilter, messages chan<- tea.Msg) {
+	defer close(messages)
+
+	req, err := buildJobsStreamRequest(ctx, client.BaseURL, filter)
+	if err != nil {
+		sendJobsStreamMessage(ctx, messages, jobsStreamFailedMsg{err: "invalid jobs stream request"})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+client.Token)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	streamHTTP := &http.Client{Transport: client.HTTPClient().Transport}
+	resp, err := streamHTTP.Do(req)
+	if err != nil {
+		sendJobsStreamMessage(ctx, messages, jobsStreamFailedMsg{err: "jobs stream unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		sendJobsStreamMessage(ctx, messages, jobsStreamFailedMsg{err: "401 unauthorized"})
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		summary := strings.TrimSpace(string(body))
+		if summary == "" {
+			summary = http.StatusText(resp.StatusCode)
+		}
+		sendJobsStreamMessage(ctx, messages, jobsStreamFailedMsg{err: fmt.Sprintf("jobs stream failed: %d (%s)", resp.StatusCode, summary)})
+		return
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+
+	var eventName string
+	var dataLines []string
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		line := scanner.Text()
+		if line == "" {
+			if len(dataLines) == 0 {
+				eventName = ""
+				continue
+			}
+
+			data := strings.Join(dataLines, "\n")
+			dataLines = nil
+
+			if eventName == "ping" {
+				eventName = ""
+				continue
+			}
+
+			if eventMsg, ok := parseJobsStreamPayload(data); ok {
+				sendJobsStreamMessage(ctx, messages, eventMsg)
+			}
+			eventName = ""
+			continue
+		}
+
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		sendJobsStreamMessage(ctx, messages, jobsStreamFailedMsg{err: "jobs stream disconnected"})
+	}
+}
+
+func sendJobsStreamMessage(ctx context.Context, messages chan<- tea.Msg, msg tea.Msg) {
+	select {
+	case <-ctx.Done():
+		return
+	case messages <- msg:
+		return
+	}
+}
+
+func buildJobsStreamRequest(ctx context.Context, baseURL string, filter jobsStreamFilter) (*http.Request, error) {
+	u, err := url.Parse(strings.TrimRight(baseURL, "/") + "/jobs/stream")
+	if err != nil {
+		return nil, err
+	}
+
+	q := u.Query()
+	if filter.orgID != "" {
+		q.Set("org_id", filter.orgID)
+	}
+	if filter.repoID != "" {
+		q.Set("repo_id", filter.repoID)
+	}
+	for _, cloneURL := range filter.cloneURLs {
+		if trimmed := strings.TrimSpace(cloneURL); trimmed != "" {
+			q.Add("clone_url", trimmed)
+		}
+	}
+	u.RawQuery = q.Encode()
+
+	return http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+}
+
+func parseJobsStreamPayload(data string) (jobsStreamEventMsg, bool) {
+	var allJobs []api.Job
+	if err := json.Unmarshal([]byte(data), &allJobs); err == nil {
+		return jobsStreamEventMsg{jobs: allJobs, full: true}, true
+	}
+
+	var payload struct {
+		Jobs []api.Job `json:"jobs"`
+		Job  *api.Job  `json:"job"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err == nil {
+		if payload.Jobs != nil {
+			return jobsStreamEventMsg{jobs: payload.Jobs, full: true}, true
+		}
+		if payload.Job != nil {
+			return jobsStreamEventMsg{jobs: []api.Job{*payload.Job}, full: false}, true
+		}
+	}
+
+	var single api.Job
+	if err := json.Unmarshal([]byte(data), &single); err == nil && single.ID != "" {
+		return jobsStreamEventMsg{jobs: []api.Job{single}, full: false}, true
+	}
+
+	return jobsStreamEventMsg{}, false
+}
+
+// checkAuthCmd pings the API. Only propagates 401 errors to avoid spurious logouts on network hiccups.
 func checkAuthCmd(client *api.Client) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.CheckAuth(); err != nil {
-			return errMsg(err.Error())
+			if strings.Contains(err.Error(), "401") {
+				return errMsg(err.Error())
+			}
+			// Network error — ignore silently to avoid forced logout on timeout.
+			return nil
 		}
 		return nil
 	}
 }
 
-// --- Jobs ---
+// ── Jobs ──────────────────────────────────────────────────────────────────────
 
 func fetchJobs(client *api.Client, orgID, repoID string) tea.Cmd {
 	return func() tea.Msg {
@@ -122,20 +446,66 @@ func fetchJobs(client *api.Client, orgID, repoID string) tea.Cmd {
 	}
 }
 
-func fetchAllJobs(client *api.Client, cloneURL string) tea.Cmd {
+func fetchAllJobs(client *api.Client, cloneURLs ...string) tea.Cmd {
 	return func() tea.Msg {
 		jobs, err := client.GetAllJobs()
 		if err != nil {
 			return errMsg(err.Error())
 		}
+
+		targets := make(map[string]struct{})
+		for _, raw := range cloneURLs {
+			url := strings.TrimSpace(raw)
+			if url != "" {
+				targets[url] = struct{}{}
+			}
+		}
+
+		if len(targets) == 0 {
+			return jobsLoadedMsg{jobs: nil}
+		}
+
 		var filtered []api.Job
 		for _, j := range jobs {
-			if j.CloneURL == cloneURL {
+			if _, ok := targets[j.CloneURL]; ok {
 				filtered = append(filtered, j)
 			}
 		}
 		return jobsLoadedMsg{jobs: filtered}
 	}
+}
+
+func preferredGitHubCloneURL(repo *api.GitHubRepo) string {
+	if repo == nil {
+		return ""
+	}
+	if ssh := strings.TrimSpace(repo.SSHURL); ssh != "" {
+		return ssh
+	}
+	return strings.TrimSpace(repo.CloneURL)
+}
+
+func githubCloneURLCandidates(repo *api.GitHubRepo) []string {
+	if repo == nil {
+		return nil
+	}
+	urls := make([]string, 0, 2)
+	if ssh := strings.TrimSpace(repo.SSHURL); ssh != "" {
+		urls = append(urls, ssh)
+	}
+	if https := strings.TrimSpace(repo.CloneURL); https != "" && !containsString(urls, https) {
+		urls = append(urls, https)
+	}
+	return urls
+}
+
+func containsString(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func deleteJob(client *api.Client, orgID, repoID, jobID string) tea.Cmd {
@@ -147,7 +517,6 @@ func deleteJob(client *api.Client, orgID, repoID, jobID string) tea.Cmd {
 	}
 }
 
-// deleteJobByID is used when org/repo context is unavailable (github-flow).
 func deleteJobByID(client *api.Client, jobID string) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.DeleteJobByID(jobID); err != nil {
@@ -157,9 +526,118 @@ func deleteJobByID(client *api.Client, jobID string) tea.Cmd {
 	}
 }
 
+func downloadJobArtifact(client *api.Client, jobID string) tea.Cmd {
+	return func() tea.Msg {
+		path, err := saveJobArtifactZip(client, jobID)
+		if err != nil {
+			return errMsg(err.Error())
+		}
+		return artifactDownloadedMsg{path: path}
+	}
+}
+
+func saveJobArtifactZip(client *api.Client, jobID string) (string, error) {
+	content, err := client.DownloadJobArtifact(jobID)
+	if err != nil {
+		return "", err
+	}
+
+	name := artifactZipFileName(jobID, time.Now())
+	for _, candidate := range artifactWriteCandidates(name) {
+		if err := writeArtifactFile(candidate, content); err != nil {
+			continue
+		}
+
+		absPath, err := filepath.Abs(candidate)
+		if err != nil {
+			return candidate, nil
+		}
+		return absPath, nil
+	}
+
+	return "", fmt.Errorf("artifact save failed")
+}
+
+func artifactWriteCandidates(name string) []string {
+	candidates := []string{name}
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		candidates = append(candidates, filepath.Join(home, "Downloads", name))
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	uniq := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		uniq = append(uniq, candidate)
+	}
+	return uniq
+}
+
+func writeArtifactFile(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, content, 0644)
+}
+
+func artifactZipFileName(jobID string, now time.Time) string {
+	baseID := sanitizeFileSegment(shortID(strings.TrimSpace(jobID)))
+	if baseID == "" {
+		baseID = "job"
+	}
+	return fmt.Sprintf("gopherci-artifact-%s-%s.zip", baseID, now.Format("20060102-150405"))
+}
+
+func sanitizeFileSegment(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('-')
+	}
+	out := strings.Trim(b.String(), "-_")
+	if out == "" {
+		return "job"
+	}
+	return out
+}
+
+func createJobFromGoci(client *api.Client, m model) tea.Cmd {
+	return func() tea.Msg {
+		if len(m.newJob.steps) == 0 {
+			return errMsg("no steps defined in .goci")
+		}
+		return dispatchCreate(client, m, m.newJob.steps)
+	}
+}
+
+func createJobFromCmd(client *api.Client, m model, cmd string) tea.Cmd {
+	return func() tea.Msg {
+		steps := []api.Step{
+			{Name: "run", Cmd: []string{"sh", "-c", cmd}},
+		}
+		return dispatchCreate(client, m, steps)
+	}
+}
+
 func rerunJob(client *api.Client, orgID, repoID string) tea.Cmd {
 	return func() tea.Msg {
-		steps, err := loadSteps()
+		steps, _, err := loadSteps()
 		if err != nil {
 			return errMsg(err.Error())
 		}
@@ -172,7 +650,7 @@ func rerunJob(client *api.Client, orgID, repoID string) tea.Cmd {
 
 func rerunJobWithURL(client *api.Client, cloneURL string) tea.Cmd {
 	return func() tea.Msg {
-		steps, err := loadSteps()
+		steps, _, err := loadSteps()
 		if err != nil {
 			return errMsg(err.Error())
 		}
@@ -183,7 +661,7 @@ func rerunJobWithURL(client *api.Client, cloneURL string) tea.Cmd {
 	}
 }
 
-// --- Orgs / Repos ---
+// ── Orgs / Repos ──────────────────────────────────────────────────────────────
 
 func fetchOrgsOrGitHub(client *api.Client, cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
@@ -209,5 +687,46 @@ func fetchRepos(client *api.Client, orgID string) tea.Cmd {
 			return errMsg(err.Error())
 		}
 		return reposLoadedMsg{repos: repos}
+	}
+}
+
+// ── SSH Keys ──────────────────────────────────────────────────────────────────
+
+func fetchSSHKeys(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		keys, err := client.GetSSHKeys()
+		if err != nil {
+			return errMsg(err.Error())
+		}
+		return sshKeysLoadedMsg{keys: keys}
+	}
+}
+
+func createSSHKey(client *api.Client, name, privateKey string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := client.CreateSSHKey(name, privateKey); err != nil {
+			return errMsg(err.Error())
+		}
+		return sshKeyCreatedMsg{}
+	}
+}
+
+func deleteSSHKey(client *api.Client, keyID string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DeleteSSHKey(keyID); err != nil {
+			return errMsg(err.Error())
+		}
+		return sshKeyDeletedMsg{}
+	}
+}
+
+// ── Clipboard ────────────────────────────────────────────────────────────────
+
+func copyToClipboard(text string) tea.Cmd {
+	return func() tea.Msg {
+		if err := clipboard.WriteAll(text); err != nil {
+			return errMsg("clipboard: " + err.Error())
+		}
+		return clipboardCopiedMsg{}
 	}
 }

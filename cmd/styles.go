@@ -6,17 +6,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ── Colours ─────────────────────────────────────────────────────────────────
+// ── Colours ──────────────────────────────────────────────────────────────────
 
 const (
 	colorBrand   = lipgloss.Color("86")  // GopherCI cyan
 	colorWhite   = lipgloss.Color("15")  // bright white
-	colorDim     = lipgloss.Color("241") // muted gray – unselected text
+	colorDim     = lipgloss.Color("241") // muted gray
 	colorFaint   = lipgloss.Color("237") // very dark – separators
 	colorSuccess = lipgloss.Color("42")  // green
 	colorFailed  = lipgloss.Color("196") // red
 	colorRunning = lipgloss.Color("214") // amber
 	colorPending = lipgloss.Color("33")  // blue
+	colorWarning = lipgloss.Color("220") // yellow
 )
 
 // ── Base styles ──────────────────────────────────────────────────────────────
@@ -33,33 +34,38 @@ var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
 
-	// Selected list-item label
 	selectedTextStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(colorWhite)
 
-	// Cursor glyph rendered in brand cyan
 	cursorGlyph = lipgloss.NewStyle().Foreground(colorBrand).Render("❯")
 
-	// Status dots
 	dotSuccess = lipgloss.NewStyle().Foreground(colorSuccess).Render("●")
 	dotFailed  = lipgloss.NewStyle().Foreground(colorFailed).Render("●")
 	dotRunning = lipgloss.NewStyle().Foreground(colorRunning).Render("●")
 	dotPending = lipgloss.NewStyle().Foreground(colorPending).Render("●")
 
-	// Feedback
 	errorStyle   = lipgloss.NewStyle().Foreground(colorFailed).Bold(true)
+	successStyle = lipgloss.NewStyle().Foreground(colorSuccess)
+	warnStyle    = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	loadingStyle = lipgloss.NewStyle().Foreground(colorBrand).Italic(true)
 	helpStyle    = lipgloss.NewStyle().Foreground(colorDim)
 	sepStyle     = lipgloss.NewStyle().Foreground(colorFaint)
+	monoStyle    = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
+
+	confirmBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorWarning).
+			Padding(0, 2)
+
+	breadcrumbSepStyle  = lipgloss.NewStyle().Foreground(colorDim)
+	breadcrumbCurrStyle = lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
+	breadcrumbPrevStyle = lipgloss.NewStyle().Foreground(colorDim)
 )
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// renderItem renders a list row with a cursor prefix.
-//
-//	selected → "❯ Label"  (cyan cursor, bold white label)
-//	normal   → "  Label"  (no cursor, dim label)
+// renderItem renders a list row: selected = "❯ Label", normal = "  Label".
 func renderItem(label string, selected bool) string {
 	if selected {
 		return cursorGlyph + " " + selectedTextStyle.Render(label)
@@ -67,7 +73,7 @@ func renderItem(label string, selected bool) string {
 	return dimStyle.Render("  " + label)
 }
 
-// statusDot returns a coloured ● dot matching the job status.
+// statusDot returns a coloured ● matching the job status.
 func statusDot(status string) string {
 	switch status {
 	case "success":
@@ -95,13 +101,21 @@ func statusText(status string) string {
 	}
 }
 
-// renderSep renders a subtle horizontal divider line.
+// renderSep renders a subtle horizontal divider line (fixed 44 chars).
 func renderSep() string {
 	return sepStyle.Render("  " + strings.Repeat("─", 44))
 }
 
+// renderSepWidth renders a divider scaled to the terminal width.
+func renderSepWidth(w int) string {
+	n := w - 4
+	if n < 4 {
+		n = 44
+	}
+	return sepStyle.Render("  " + strings.Repeat("─", n))
+}
+
 // renderHelp renders keyboard hint pairs at the bottom of a view.
-// Pass key-action pairs e.g. "↑↓ move", "enter select".
 func renderHelp(hints ...string) string {
 	return helpStyle.Render("  " + strings.Join(hints, "  ·  "))
 }
