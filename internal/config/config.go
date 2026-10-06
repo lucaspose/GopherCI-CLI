@@ -2,8 +2,12 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -54,4 +58,28 @@ func Save(cfg *Config) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// ValidateAPIURL rejects URLs that would send credentials in clear text:
+// plain http:// is only allowed for a server on the local machine.
+func ValidateAPIURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return errors.New("invalid API URL")
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return errors.New("use https:// for a remote server (http:// is only allowed for localhost)")
+	default:
+		return errors.New("API URL must start with https:// or http://localhost")
+	}
 }

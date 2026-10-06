@@ -55,6 +55,10 @@ func main() {
 		_ = config.Save(cfg)
 	}
 	if url := strings.TrimSpace(os.Getenv(config.APIURLEnv)); url != "" {
+		if err := config.ValidateAPIURL(url); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", config.APIURLEnv, err)
+			os.Exit(1)
+		}
 		cfg.APIURL = url
 	}
 

@@ -528,6 +528,10 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 		if m.settings.editing {
 			newURL := strings.TrimSpace(m.settings.apiURLInput.Value())
 			if newURL != "" {
+				if err := config.ValidateAPIURL(newURL); err != nil {
+					m.err = err.Error()
+					return m, nil
+				}
 				m.config.APIURL = newURL
 				config.Save(m.config)
 				m.apiClient = newAPIClient(m.config)

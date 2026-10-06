@@ -89,3 +89,18 @@ func TestSave_FilePermissions(t *testing.T) {
 		t.Errorf("expected 0600 permissions, got %o", info.Mode().Perm())
 	}
 }
+
+func TestValidateAPIURL(t *testing.T) {
+	valid := []string{"http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "https://ci.example.com"}
+	for _, u := range valid {
+		if err := config.ValidateAPIURL(u); err != nil {
+			t.Errorf("%s should be accepted: %v", u, err)
+		}
+	}
+	invalid := []string{"http://ci.example.com", "http://192.168.1.10:8080", "ftp://localhost", "localhost:8080", ""}
+	for _, u := range invalid {
+		if err := config.ValidateAPIURL(u); err == nil {
+			t.Errorf("%s should be rejected", u)
+		}
+	}
+}

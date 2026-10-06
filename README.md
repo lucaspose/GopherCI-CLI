@@ -64,6 +64,9 @@ the URL in **Settings** or set it for one run:
 GOCI_API_URL=https://ci.example.com gopherci
 ```
 
+Remote servers must use `https://`; plain `http://` is only accepted for `localhost`
+so that passwords and tokens are never sent in clear text.
+
 ### Pipeline file
 
 Put a `.goci` file at the root of your project, then create a new job (`n`) from the jobs screen:
