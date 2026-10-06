@@ -54,6 +54,9 @@ func main() {
 		}
 		_ = config.Save(cfg)
 	}
+	if url := strings.TrimSpace(os.Getenv(config.APIURLEnv)); url != "" {
+		cfg.APIURL = url
+	}
 
 	initialScreen := screenLogin
 	if err == nil && (cfg.Token != "" || cfg.GitHubToken != "") {

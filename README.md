@@ -56,8 +56,13 @@ gopherci              # start the interactive UI
 gopherci --version
 ```
 
-On first launch, open **Settings** to set the API URL of your GopherCI server
-(for a local server started with `make up` in the GopherCI repository: `http://localhost:8080`).
+By default the client talks to `http://localhost:8080`, which is where a
+GopherCI server started with `make up` listens. To use another server, change
+the URL in **Settings** or set it for one run:
+
+```bash
+GOCI_API_URL=https://ci.example.com gopherci
+```
 
 ### Pipeline file
 

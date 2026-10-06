@@ -7,8 +7,12 @@ import (
 )
 
 const (
-	DefaultAPIURL      = "https://api.gopher.digitalys.tech"
+	// DefaultAPIURL matches a GopherCI server started locally (make up).
+	DefaultAPIURL      = "http://localhost:8080"
 	TestSentinelAPIURL = "http://test"
+
+	// APIURLEnv overrides the configured API URL when set.
+	APIURLEnv = "GOCI_API_URL"
 )
 
 type Config struct {
