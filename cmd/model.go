@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lucaspose/goci-cli/internal/api"
@@ -134,13 +135,15 @@ type model struct {
 	apiClient *api.Client
 	config    *config.Config
 
-	err        string
-	successMsg string
-	loading    bool
-	loadingMsg string
-	menuCursor int
-	width      int
-	height     int
+	err              string
+	successMsg       string
+	loading          bool
+	loadingMsg       string
+	menuCursor       int
+	width            int
+	height           int
+	spinner          spinner.Model
+	githubAuthFailed bool
 
 	// selectedJob is shared between jobs/actions/logs screens.
 	selectedJob *api.Job
@@ -160,6 +163,7 @@ func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.login.inputs[0].Focus(),
 		startAuthTicker(),
+		m.spinner.Tick,
 	}
 	if m.screen != screenLogin {
 		cmds = append(cmds, checkAuthCmd(m.apiClient))

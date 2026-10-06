@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lucaspose/goci-cli/internal/api"
@@ -21,12 +22,12 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil || cfg == nil {
-		cfg = &config.Config{APIURL: "http://localhost:8080"}
+		cfg = &config.Config{APIURL: config.DefaultAPIURL}
 	}
 
 	// Avoid carrying over test fixture values into runtime config.
-	if strings.TrimSpace(cfg.APIURL) == "" || cfg.APIURL == "http://test" {
-		cfg.APIURL = "http://localhost:8080"
+	if strings.TrimSpace(cfg.APIURL) == "" || cfg.APIURL == config.TestSentinelAPIURL {
+		cfg.APIURL = config.DefaultAPIURL
 		if cfg.Token == "tok" {
 			cfg.Token = ""
 		}
@@ -41,10 +42,15 @@ func main() {
 		initialScreen = screenMenu
 	}
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = loadingStyle
+
 	m := model{
 		screen:    initialScreen,
 		config:    cfg,
 		apiClient: api.NewClient(cfg.APIURL, cfg.Token),
+		spinner:   sp,
 		login: loginState{
 			inputs: []textinput.Model{emailInput, passwordInput},
 		},

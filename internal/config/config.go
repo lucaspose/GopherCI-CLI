@@ -6,6 +6,11 @@ import (
 	"path/filepath"
 )
 
+const (
+	DefaultAPIURL      = "https://api.gopher.digitalys.tech"
+	TestSentinelAPIURL = "http://test"
+)
+
 type Config struct {
 	Token       string `json:"token"`
 	APIURL      string `json:"api_url"`

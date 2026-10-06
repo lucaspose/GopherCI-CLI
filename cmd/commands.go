@@ -183,7 +183,7 @@ func exchangeGitHubToken(client *api.Client, githubToken string) tea.Cmd {
 func githubAuthURL(baseURL string) string {
 	trimmed := strings.TrimSpace(baseURL)
 	if trimmed == "" {
-		trimmed = "http://localhost:8080"
+		trimmed = config.DefaultAPIURL
 	}
 	return strings.TrimRight(trimmed, "/") + "/auth/github"
 }
@@ -526,9 +526,9 @@ func deleteJobByID(client *api.Client, jobID string) tea.Cmd {
 	}
 }
 
-func downloadJobArtifact(client *api.Client, jobID string) tea.Cmd {
+func downloadJobArtifact(client *api.Client, jobID string, repoName string) tea.Cmd {
 	return func() tea.Msg {
-		path, err := saveJobArtifactZip(client, jobID)
+		path, err := saveJobArtifactZip(client, jobID, repoName)
 		if err != nil {
 			return errMsg(err.Error())
 		}
@@ -536,13 +536,13 @@ func downloadJobArtifact(client *api.Client, jobID string) tea.Cmd {
 	}
 }
 
-func saveJobArtifactZip(client *api.Client, jobID string) (string, error) {
+func saveJobArtifactZip(client *api.Client, jobID string, repoName string) (string, error) {
 	content, err := client.DownloadJobArtifact(jobID)
 	if err != nil {
 		return "", err
 	}
 
-	name := artifactZipFileName(jobID, time.Now())
+	name := artifactZipFileName(jobID, repoName, time.Now())
 	for _, candidate := range artifactWriteCandidates(name) {
 		if err := writeArtifactFile(candidate, content); err != nil {
 			continue
@@ -559,11 +559,7 @@ func saveJobArtifactZip(client *api.Client, jobID string) (string, error) {
 }
 
 func artifactWriteCandidates(name string) []string {
-	candidates := []string{name}
-	home, err := os.UserHomeDir()
-	if err == nil && strings.TrimSpace(home) != "" {
-		candidates = append(candidates, filepath.Join(home, "Downloads", name))
-	}
+	candidates := []string{filepath.Join("/tmp", "goci-artifacts", name)}
 
 	seen := make(map[string]struct{}, len(candidates))
 	uniq := make([]string, 0, len(candidates))
@@ -590,10 +586,17 @@ func writeArtifactFile(path string, content []byte) error {
 	return os.WriteFile(path, content, 0644)
 }
 
-func artifactZipFileName(jobID string, now time.Time) string {
+func artifactZipFileName(jobID string, repoName string, now time.Time) string {
 	baseID := sanitizeFileSegment(shortID(strings.TrimSpace(jobID)))
 	if baseID == "" {
 		baseID = "job"
+	}
+	repoSegment := ""
+	if trimmedRepo := strings.TrimSpace(repoName); trimmedRepo != "" {
+		repoSegment = sanitizeFileSegment(trimmedRepo)
+	}
+	if repoSegment != "" {
+		return fmt.Sprintf("%s-%s-%s.zip", repoSegment, baseID, now.Format("20060102-150405"))
 	}
 	return fmt.Sprintf("gopherci-artifact-%s-%s.zip", baseID, now.Format("20060102-150405"))
 }

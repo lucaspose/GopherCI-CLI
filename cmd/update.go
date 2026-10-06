@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lucaspose/goci-cli/internal/api"
@@ -218,6 +219,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		rawErr := strings.TrimSpace(string(msg))
 		m.err = presentableError(rawErr, m.screen)
 		m.loading = false
+		if m.screen == screenLogin && m.login.cursor == 1 {
+			m.githubAuthFailed = true
+		}
 		if shouldForceReauth(rawErr, m.screen) {
 			m.stopJobsStream()
 			m.config.Token = ""
@@ -227,6 +231,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 		}
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case tickMsg:
 		cmd := startAuthTicker()
@@ -299,10 +308,18 @@ func (m model) handleKeyWithStatus(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return next, cmd, true
 
 	case "up":
+		if m.screen == screenLogs {
+			m.scrollLogs(-1)
+			return m, nil, true
+		}
 		m.moveCursor(-1)
 		return m, nil, true
 
 	case "down":
+		if m.screen == screenLogs {
+			m.scrollLogs(+1)
+			return m, nil, true
+		}
 		m.moveCursor(+1)
 		return m, nil, true
 
@@ -321,6 +338,10 @@ func (m model) handleKeyWithStatus(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, false
 
 	case "pgdown", "ctrl+f":
+		if m.screen == screenLogs {
+			m.scrollLogsPage(+1)
+			return m, nil, true
+		}
 		if m.screen == screenJobs {
 			visible := filterJobs(m.jobs.jobs, m.jobs.filter)
 			_, total := paginateJobs(visible, m.jobs.pageSize, m.jobs.pageOffset)
@@ -334,6 +355,10 @@ func (m model) handleKeyWithStatus(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, false
 
 	case "pgup", "ctrl+b":
+		if m.screen == screenLogs {
+			m.scrollLogsPage(-1)
+			return m, nil, true
+		}
 		if m.screen == screenJobs {
 			if m.jobs.pageOffset > 0 {
 				m.jobs.pageOffset -= m.jobs.pageSize
@@ -430,12 +455,21 @@ func (m model) handleKeyWithStatus(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	case "e":
 		if m.screen == screenSettings && !m.settings.editing {
 			input := textinput.New()
-			input.Placeholder = "http://localhost:8080"
+			input.Placeholder = config.DefaultAPIURL
 			input.SetValue(m.config.APIURL)
 			input.Focus()
 			m.settings.apiURLInput = input
 			m.settings.editing = true
 			return m, nil, true
+		}
+		return m, nil, false
+
+	case "r":
+		if m.screen == screenLogin && m.githubAuthFailed {
+			m.err = ""
+			m.successMsg = "Connexion GitHub: ouverture du navigateur..."
+			m.githubAuthFailed = false
+			return m, waitForGitHubToken(m.config.APIURL), true
 		}
 		return m, nil, false
 	}
@@ -454,6 +488,7 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 	case screenLogin:
 		if m.login.cursor == 1 {
 			m.err = ""
+			m.githubAuthFailed = false
 			m.successMsg = "Connexion GitHub: ouverture du navigateur..."
 			return m, waitForGitHubToken(m.config.APIURL)
 		}
@@ -514,25 +549,20 @@ func (m model) handleMenuEnter() (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.loadingMsg = "Chargement des dépôts..."
 		return m, fetchOrgsOrGitHub(m.apiClient, m.config)
-	case 1: // Jobs
-		m.screen = screenJobs
-		m.loading = true
-		m.loadingMsg = "Chargement des dépôts..."
-		return m, fetchOrgsOrGitHub(m.apiClient, m.config)
-	case 2: // SSH Keys
+	case 1: // SSH Keys
 		m = initSSHKeyState(m)
 		m.screen = screenSSHKeys
 		m.loading = true
 		m.loadingMsg = "Chargement des clés SSH..."
 		return m, fetchSSHKeys(m.apiClient)
-	case 3: // Settings
+	case 2: // Settings
 		m.screen = screenSettings
 		m.settings.editing = false
 		return m, nil
-	case 4: // Help
+	case 3: // Help
 		m.screen = screenHelp
 		return m, nil
-	case 5: // Logout
+	case 4: // Logout
 		m.stopJobsStream()
 		m.config.Token = ""
 		m.config.GitHubToken = ""
@@ -613,7 +643,7 @@ func (m model) handleActionEnter() (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		m.loadingMsg = "Téléchargement de l'artifact..."
-		return m, downloadJobArtifact(m.apiClient, m.selectedJob.ID)
+		return m, downloadJobArtifact(m.apiClient, m.selectedJob.ID, repoLabel(m))
 	case 3: // Delete
 		m.actions.confirmDelete = true
 		return m, nil
@@ -1248,7 +1278,7 @@ func (m *model) applyResponsiveLayout() {
 func (m *model) moveCursor(delta int) {
 	switch {
 	case m.screen == screenMenu:
-		m.menuCursor = clamp(m.menuCursor+delta, 0, 5)
+		m.menuCursor = clamp(m.menuCursor+delta, 0, 4)
 	case m.screen == screenJobs:
 		visible := filterJobs(m.jobs.jobs, m.jobs.filter)
 		page, _ := paginateJobs(visible, m.jobs.pageSize, m.jobs.pageOffset)
@@ -1300,6 +1330,34 @@ func (m *model) moveCursor(delta int) {
 			}
 		}
 	}
+}
+
+// scrollLogs déplace l'offset de scroll des logs en respectant les bornes.
+func (m *model) scrollLogs(delta int) {
+	if m.selectedJob == nil {
+		return
+	}
+	max := len(m.selectedJob.Logs) - 1
+	if max < 0 {
+		max = 0
+	}
+	m.logs.offset = clamp(m.logs.offset+delta, 0, max)
+}
+
+// scrollLogsPage déplace l'offset d'une page entière (PgUp/PgDn).
+func (m *model) scrollLogsPage(delta int) {
+	pageSize := m.logsPageSize()
+	m.scrollLogs(delta * pageSize)
+}
+
+// logsPageSize retourne le nombre de lignes de logs visibles.
+func (m model) logsPageSize() int {
+	// header (~4 lignes) + footer (~3 lignes)
+	size := m.height - 7
+	if size < 5 {
+		size = 5
+	}
+	return size
 }
 
 // ── Screen init helpers ───────────────────────────────────────────────────────

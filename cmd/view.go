@@ -3,6 +3,10 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/lucaspose/goci-cli/internal/api"
 )
 
 func (m model) View() string {
@@ -31,6 +35,29 @@ func (m model) View() string {
 	return ""
 }
 
+// jobDuration retourne une chaîne lisible comme "2m34s" ou "5s".
+// Pour un job en cours, le temps est calculé depuis CreatedAt jusqu'à now.
+func jobDuration(job api.Job) string {
+	end := time.Now()
+	if job.FinishedAt != nil {
+		end = *job.FinishedAt
+	}
+	d := end.Sub(job.CreatedAt).Round(time.Second)
+	if d < 0 {
+		return ""
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm%02ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
+}
+
 // ── Login ────────────────────────────────────────────────────────────────────
 
 func viewLogin(m model) string {
@@ -54,7 +81,11 @@ func viewLogin(m model) string {
 
 	b.WriteString(renderFeedback(m))
 	b.WriteString("\n" + renderSep() + "\n")
-	b.WriteString(renderHelp("↑↓ naviguer", "enter sélectionner", "tab changer de champ") + "\n")
+	hints := []string{"↑↓ naviguer", "enter sélectionner", "tab changer de champ"}
+	if m.githubAuthFailed {
+		hints = append(hints, "r réessayer GitHub")
+	}
+	b.WriteString(renderHelp(hints...) + "\n")
 	return b.String()
 }
 
@@ -63,11 +94,15 @@ func viewLogin(m model) string {
 func viewMenu(m model) string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString("  " + brandStyle.Render("GopherCI") + "  " + dimStyle.Render(m.config.APIURL) + "\n\n")
+	w := m.width
+	if w == 0 {
+		w = 80
+	}
+	b.WriteString(renderWelcomePanel(w, m.config.APIURL) + "\n\n")
 
-	items := []string{"Repositories", "Jobs", "SSH Keys", "Settings", "Help", "Logout"}
+	items := []string{"Repositories", "SSH Keys", "Settings", "Help", "Logout"}
 	for i, item := range items {
-		if i == 3 {
+		if i == 2 {
 			b.WriteString("  " + dimStyle.Render("  ─────────────────") + "\n")
 		}
 		b.WriteString("  " + renderItem(item, i == m.menuCursor) + "\n")
@@ -79,11 +114,61 @@ func viewMenu(m model) string {
 	return b.String()
 }
 
+// renderWelcomePanel builds the styled box at the top of the menu.
+// In lipgloss v1.x Width() is the total outer size (border + padding + content).
+func renderWelcomePanel(w int, apiURL string) string {
+	// Keep a small safety margin to avoid clipping the top-right rounded corner.
+	boxW := w - 4
+	if boxW < 28 {
+		boxW = 28
+	}
+	// inner content width = boxW - border(2) - padding horizontal(4)
+	innerW := boxW - 6
+	if innerW < 20 {
+		innerW = 20
+	}
+
+	// Center the mascot manually – lipgloss.Width handles Unicode visual width.
+	const mascotW = 14
+	leftPad := (innerW - mascotW) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	pad := strings.Repeat(" ", leftPad)
+	lines := strings.Split(mascotASCII, "\n")
+	centeredLines := make([]string, len(lines))
+	for i, l := range lines {
+		centeredLines[i] = pad + l
+	}
+	mascotBlock := lipgloss.NewStyle().Foreground(colorMascot).Render(
+		strings.Join(centeredLines, "\n"))
+
+	center := lipgloss.NewStyle().Width(innerW).Align(lipgloss.Center)
+
+	title := center.Bold(true).Foreground(colorBrand).Render("GopherCI")
+	subtitle := center.Foreground(colorDim).Render("CI/CD simplifié • Jenkins en ligne de commande")
+
+	serverLabel := "⬡ " + apiURL
+	if apiURL == "" {
+		serverLabel = "⬡ serveur non configuré"
+	}
+	serverLine := center.Foreground(colorDim).Render(serverLabel)
+
+	content := mascotBlock + "\n" + title + "\n" + subtitle + "\n" + serverLine
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBrand).
+		Padding(1, 2).
+		Width(boxW).
+		Render(content)
+}
+
 // ── Repositories ─────────────────────────────────────────────────────────────
 
 func viewRepos(m model) string {
 	if m.loading {
-		return "\n  " + loadingStyle.Render("⠸  "+m.loadingMsg) + "\n"
+		return "\n" + lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(m.spinner.View()+" "+m.loadingMsg) + "\n"
 	}
 
 	var b strings.Builder
@@ -112,7 +197,7 @@ func viewRepos(m model) string {
 			selected := i == m.repos.githubCursor
 			label := repo.Name
 			if repo.Private {
-				label += "  " + monoStyle.Render("🔒 privé")
+				label += "  " + monoStyle.Render("privé")
 			}
 			b.WriteString("  " + renderItem(label, selected) + "\n")
 		}
@@ -125,9 +210,6 @@ func viewRepos(m model) string {
 		b.WriteString(renderFeedback(m))
 		b.WriteString("\n" + renderSepWidth(m.width) + "\n")
 		hints := []string{"↑↓ naviguer", "enter sélectionner"}
-		if totalPages > 1 {
-			hints = append(hints, "←→ changer de page")
-		}
 		hints = append(hints, "j ouvrir les jobs", "esc retour")
 		b.WriteString(renderHelp(hints...) + "\n")
 		return b.String()
@@ -162,9 +244,6 @@ func viewRepos(m model) string {
 		b.WriteString(renderFeedback(m))
 		b.WriteString("\n" + renderSepWidth(m.width) + "\n")
 		hints := []string{"↑↓ naviguer", "enter sélectionner"}
-		if totalPages > 1 {
-			hints = append(hints, "←→ changer de page")
-		}
 		hints = append(hints, "esc retour")
 		b.WriteString(renderHelp(hints...) + "\n")
 		return b.String()
@@ -204,9 +283,6 @@ func viewRepos(m model) string {
 	b.WriteString(renderFeedback(m))
 	b.WriteString("\n" + renderSepWidth(m.width) + "\n")
 	hints := []string{"↑↓ naviguer", "enter sélectionner"}
-	if totalPages > 1 {
-		hints = append(hints, "←→ changer de page")
-	}
 	if m.hasRepoContext() {
 		hints = append(hints, "j ouvrir les jobs")
 	}
@@ -219,7 +295,7 @@ func viewRepos(m model) string {
 
 func viewJobs(m model) string {
 	if m.loading {
-		return "\n  " + loadingStyle.Render("⠸  "+m.loadingMsg) + "\n"
+		return "\n" + lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(m.spinner.View()+" "+m.loadingMsg) + "\n"
 	}
 
 	var b strings.Builder
@@ -262,8 +338,9 @@ func viewJobs(m model) string {
 				st = statusText(job.Status)
 			}
 			ts := dimStyle.Render(job.CreatedAt.Format("02/01 15:04"))
-			b.WriteString(fmt.Sprintf("  %s %s  %s  %s  %s\n",
-				cursorIf(selected), statusDot(job.Status), id, st, ts))
+			dur := dimStyle.Render(jobDuration(job))
+			b.WriteString(fmt.Sprintf("  %s %s  %s  %s  %s  %s\n",
+				cursorIf(selected), statusDot(job.Status), id, st, ts, dur))
 		}
 		if totalPages > 1 {
 			b.WriteString("\n" + renderPagination(currentPage, totalPages) + "\n")
@@ -295,11 +372,11 @@ func viewJobsActions(m model) string {
 	b.WriteString(renderBreadcrumb(crumbs...) + "\n\n")
 
 	b.WriteString("  " + headerStyle.Render("Job "+shortID(m.selectedJob.ID)) + "\n")
-	b.WriteString(fmt.Sprintf("  %s  %s\n", statusDot(m.selectedJob.Status), statusText(m.selectedJob.Status)))
+	b.WriteString(fmt.Sprintf("  %s  %s  %s\n", statusDot(m.selectedJob.Status), statusText(m.selectedJob.Status), dimStyle.Render(jobDuration(*m.selectedJob))))
 	b.WriteString("  " + dimStyle.Render("Créé le  "+m.selectedJob.CreatedAt.Format("2006-01-02 15:04:05")) + "\n\n")
 
 	if m.actions.confirmDelete {
-		b.WriteString("  " + renderConfirm("Supprimer ce job définitivement ?", "y confirmer", "esc annuler") + "\n")
+		b.WriteString(renderConfirm("Supprimer ce job définitivement ?", "y confirmer", "esc annuler") + "\n")
 	} else {
 		actions := []string{"Voir les logs", "Re-lancer", "Télécharger le ZIP", "Supprimer"}
 		for i, action := range actions {
@@ -333,16 +410,28 @@ func viewLogs(m model) string {
 		statusDot(m.selectedJob.Status),
 		statusText(m.selectedJob.Status)))
 
-	if len(m.selectedJob.Logs) == 0 {
+	logs := m.selectedJob.Logs
+	if len(logs) == 0 {
 		b.WriteString("  " + dimStyle.Render("Aucun log disponible") + "\n")
 	} else {
-		for _, line := range m.selectedJob.Logs {
+		pageSize := m.logsPageSize()
+		offset := clamp(m.logs.offset, 0, len(logs)-1)
+		end := offset + pageSize
+		if end > len(logs) {
+			end = len(logs)
+		}
+		for _, line := range logs[offset:end] {
 			b.WriteString(line + "\n")
+		}
+		// Indicateur de position
+		if len(logs) > pageSize {
+			indicator := fmt.Sprintf("ligne %d-%d / %d", offset+1, end, len(logs))
+			b.WriteString("\n  " + dimStyle.Render(indicator) + "\n")
 		}
 	}
 
 	b.WriteString("\n" + renderSep() + "\n")
-	b.WriteString(renderHelp("esc retour") + "\n")
+	b.WriteString(renderHelp("↑↓ scroller", "pgup/pgdn page", "esc retour") + "\n")
 	return b.String()
 }
 
@@ -350,7 +439,7 @@ func viewLogs(m model) string {
 
 func viewNewJob(m model) string {
 	if m.loading {
-		return "\n  " + loadingStyle.Render("⠸  "+m.loadingMsg) + "\n"
+		return "\n" + lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(m.spinner.View()+" "+m.loadingMsg) + "\n"
 	}
 
 	var b strings.Builder
@@ -411,7 +500,7 @@ func viewNewJob(m model) string {
 
 func viewSSHKeys(m model) string {
 	if m.loading {
-		return "\n  " + loadingStyle.Render("⠸  "+m.loadingMsg) + "\n"
+		return "\n" + lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(m.spinner.View()+" "+m.loadingMsg) + "\n"
 	}
 
 	var b strings.Builder
@@ -442,7 +531,7 @@ func viewSSHKeys(m model) string {
 
 		if m.ssh.confirmDelete && len(m.ssh.keys) > 0 {
 			key := m.ssh.keys[m.ssh.cursor]
-			b.WriteString("\n  " + renderConfirm("Supprimer \""+key.Name+"\" définitivement ?", "y confirmer", "esc annuler") + "\n")
+			b.WriteString("\n" + renderConfirm("Supprimer \""+key.Name+"\" définitivement ?", "y confirmer", "esc annuler") + "\n")
 		}
 
 		b.WriteString(renderFeedback(m))
@@ -581,9 +670,8 @@ func viewHelp(m model) string {
 	for _, sec := range sections {
 		b.WriteString("  " + warnStyle.Render(sec.title) + "\n")
 		for _, row := range sec.rows {
-			b.WriteString(fmt.Sprintf("  %-20s%s\n",
-				dimStyle.Render(row[0]),
-				dimStyle.Render(row[1])))
+			key := fmt.Sprintf("%-16s", row[0])
+			b.WriteString("  " + dimStyle.Render(key) + "  " + dimStyle.Render(row[1]) + "\n")
 		}
 		b.WriteString("\n")
 	}

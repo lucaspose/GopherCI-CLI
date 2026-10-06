@@ -11,18 +11,19 @@ import (
 	"time"
 
 	"github.com/lucaspose/goci-cli/internal/api"
+	"github.com/lucaspose/goci-cli/internal/config"
 )
 
-func TestGitHubAuthURL_TrimsSlash(t *testing.T) {
-	got := githubAuthURL("http://localhost:8080/")
-	if got != "http://localhost:8080/auth/github" {
+func TestGitHubAuthURL_WithTrailingSlash(t *testing.T) {
+	got := githubAuthURL(config.DefaultAPIURL + "/")
+	if got != strings.TrimRight(config.DefaultAPIURL, "/")+"/auth/github" {
 		t.Fatalf("unexpected auth url: %s", got)
 	}
 }
 
-func TestGitHubAuthURL_DefaultBaseURL(t *testing.T) {
+func TestGitHubAuthURL_WithEmpty(t *testing.T) {
 	got := githubAuthURL("   ")
-	if got != "http://localhost:8080/auth/github" {
+	if got != strings.TrimRight(config.DefaultAPIURL, "/")+"/auth/github" {
 		t.Fatalf("unexpected auth url for empty base: %s", got)
 	}
 }
@@ -115,7 +116,7 @@ func TestBuildJobsStreamRequest_EncodesFilter(t *testing.T) {
 
 func TestArtifactZipFileName(t *testing.T) {
 	now := time.Date(2026, 4, 21, 10, 30, 45, 0, time.UTC)
-	got := artifactZipFileName("abc12345-deadbeef", now)
+	got := artifactZipFileName("abc12345-deadbeef", "", now)
 	want := "gopherci-artifact-abc12345-20260421-103045.zip"
 	if got != want {
 		t.Fatalf("unexpected artifact filename: got %q want %q", got, want)
@@ -149,7 +150,7 @@ func TestSaveJobArtifactZip(t *testing.T) {
 	})
 
 	client := api.NewClient(server.URL, "tok")
-	path, err := saveJobArtifactZip(client, "job1")
+	path, err := saveJobArtifactZip(client, "job1", "")
 	if err != nil {
 		t.Fatalf("saveJobArtifactZip: %v", err)
 	}

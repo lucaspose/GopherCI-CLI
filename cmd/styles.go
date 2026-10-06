@@ -18,11 +18,23 @@ const (
 	colorRunning = lipgloss.Color("214") // amber
 	colorPending = lipgloss.Color("33")  // blue
 	colorWarning = lipgloss.Color("220") // yellow
+	colorMascot  = lipgloss.Color("75")  // light blue – mascot
 )
 
 // ── Base styles ──────────────────────────────────────────────────────────────
 
+// Scaled from 20-wide/5-row original → 14 chars wide, 5 rows tall.
+// Structure: antennas / eye-tops / arms+eye-bottoms / body / legs.
+const mascotASCII = "" +
+	" ██        ██ \n" +
+	" ██▀▀████▀▀██ \n" +
+	"▄██▄▄████▄▄██▄\n" +
+	" ████████████ \n" +
+	" ██        ██ "
+
 var (
+	mascotStyle = lipgloss.NewStyle().Foreground(colorMascot)
+
 	brandStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorBrand)
@@ -56,7 +68,8 @@ var (
 	confirmBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorWarning).
-			Padding(0, 2)
+			Padding(0, 2).
+			MarginLeft(2)
 
 	breadcrumbSepStyle  = lipgloss.NewStyle().Foreground(colorDim)
 	breadcrumbCurrStyle = lipgloss.NewStyle().Foreground(colorWhite).Bold(true)

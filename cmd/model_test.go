@@ -18,8 +18,8 @@ func newTestModel() model {
 	pass := textinput.New()
 	return model{
 		screen:    screenMenu,
-		config:    &config.Config{APIURL: "http://test", Token: "tok"},
-		apiClient: api.NewClient("http://test", "tok"),
+		config:    &config.Config{APIURL: config.TestSentinelAPIURL, Token: "tok"},
+		apiClient: api.NewClient(config.TestSentinelAPIURL, "tok"),
 		login: loginState{
 			inputs: []textinput.Model{email, pass},
 		},
@@ -533,8 +533,8 @@ func TestMoveCursor_Menu_Clamps(t *testing.T) {
 	}
 	m.menuCursor = 5
 	m.moveCursor(1)
-	if m.menuCursor != 5 {
-		t.Errorf("expected 5 at max, got %d", m.menuCursor)
+	if m.menuCursor != 4 {
+		t.Errorf("expected 4 at max, got %d", m.menuCursor)
 	}
 }
 
