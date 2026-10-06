@@ -1,0 +1,15 @@
+# Binaries
+bin/
+/commands
+*.exe
+*.test
+
+# Coverage
+*.out
+coverage.html
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
