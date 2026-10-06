@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lucaspose/GopherCI-CLI/actions/workflows/ci.yml/badge.svg)](https://github.com/lucaspose/GopherCI-CLI/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
 An interactive terminal client for [GopherCI](https://github.com/lucaspose/GopherCI), a minimal CI/CD platform written in Go.
 Run pipelines, follow their status live, read logs and download build artifacts without leaving the terminal.
@@ -137,4 +137,8 @@ internal/config/     User config and .goci parsing
 
 ## License
 
-[MIT](LICENSE)
+Copyright (C) 2026 Lucas POSE
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE).
+You may use, modify and share this project, but any modified version, including
+one offered as a network service, must be released under the same license.
