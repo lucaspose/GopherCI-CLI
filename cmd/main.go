@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -11,7 +12,24 @@ import (
 	"github.com/lucaspose/goci-cli/internal/config"
 )
 
+// Set at build time with -ldflags "-X main.version=... -X main.commit=...".
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-v", "--version", "version":
+			fmt.Printf("gopherci %s (%s)\n", version, commit)
+			return
+		case "-h", "--help", "help":
+			fmt.Println("gopherci — terminal client for GopherCI\n\nUsage:\n  gopherci            start the interactive UI\n  gopherci --version  print the version")
+			return
+		}
+	}
+
 	emailInput := textinput.New()
 	emailInput.Placeholder = "email"
 	emailInput.Focus()
@@ -61,6 +79,7 @@ func main() {
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
