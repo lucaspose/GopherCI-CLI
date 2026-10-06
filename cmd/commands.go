@@ -558,32 +558,36 @@ func saveJobArtifactZip(client *api.Client, jobID string, repoName string) (stri
 	return "", fmt.Errorf("artifact save failed")
 }
 
+// artifactWriteCandidates returns where an artifact may be saved, in order of
+// preference: ~/Downloads/gopherci, then ~/gopherci-artifacts. Both live in the
+// user's home directory so other local users cannot read or hijack them.
 func artifactWriteCandidates(name string) []string {
-	candidates := []string{filepath.Join("/tmp", "goci-artifacts", name)}
-
-	seen := make(map[string]struct{}, len(candidates))
-	uniq := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		if _, exists := seen[candidate]; exists {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		uniq = append(uniq, candidate)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
 	}
-	return uniq
+	return []string{
+		filepath.Join(home, "Downloads", "gopherci", name),
+		filepath.Join(home, "gopherci-artifacts", name),
+	}
 }
 
+// writeArtifactFile creates a new private file; it never follows or overwrites
+// an existing file.
 func writeArtifactFile(path string, content []byte) error {
-	dir := filepath.Dir(path)
-	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
 	}
-	return os.WriteFile(path, content, 0644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	return f.Close()
 }
 
 func artifactZipFileName(jobID string, repoName string, now time.Time) string {

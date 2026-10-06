@@ -166,3 +166,26 @@ func TestSaveJobArtifactZip(t *testing.T) {
 		t.Fatalf("unexpected saved content: %q", string(content))
 	}
 }
+
+func TestArtifactsAreSavedPrivatelyInHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	candidates := artifactWriteCandidates("a.zip")
+	if len(candidates) == 0 || !strings.HasPrefix(candidates[0], home) {
+		t.Fatalf("artifacts should be saved under HOME, got %v", candidates)
+	}
+	if err := writeArtifactFile(candidates[0], []byte("zip")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("artifact permissions = %o, want 600", info.Mode().Perm())
+	}
+	if err := writeArtifactFile(candidates[0], []byte("again")); err == nil {
+		t.Fatal("expected an existing file not to be overwritten")
+	}
+}
