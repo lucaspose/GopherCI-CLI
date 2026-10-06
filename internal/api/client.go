@@ -288,12 +288,12 @@ func (c *Client) CreateJobWithURL(cloneURL string, steps []Step) error {
 }
 
 func (c *Client) GetGitHubRepositories(githubToken string) ([]GitHubRepo, error) {
-	url := c.BaseURL + "/auth/github/repositories?token=" + githubToken
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", c.BaseURL+"/auth/github/repositories", nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Token", githubToken)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err

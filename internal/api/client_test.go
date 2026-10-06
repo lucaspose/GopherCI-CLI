@@ -416,8 +416,8 @@ func TestGetGitHubRepositories_Success(t *testing.T) {
 		if r.URL.Path != "/auth/github/repositories" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("token") != "ghp_abc" {
-			t.Errorf("unexpected token param")
+		if r.Header.Get("X-GitHub-Token") != "ghp_abc" || r.URL.RawQuery != "" {
+			t.Errorf("expected token in X-GitHub-Token header, not in the URL")
 		}
 		json.NewEncoder(w).Encode(repos)
 	})
